@@ -1,0 +1,7 @@
+node_modules/
+.npm-cache/
+
+# Local/editor noise
+.DS_Store
+Thumbs.db
+*.log

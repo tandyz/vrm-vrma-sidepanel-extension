@@ -1,0 +1,19 @@
+{
+  "name": "vrm-vrma-sidepanel-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "dependencies": {
+    "@pixiv/three-vrm": "^3.4.1",
+    "@pixiv/three-vrm-animation": "^3.4.1",
+    "three": "^0.164.1"
+  },
+  "devDependencies": {
+    "vite": "^5.4.11"
+  }
+}

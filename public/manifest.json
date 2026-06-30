@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "VRM VRMA Side Panel Preview",
+  "description": "Load VRM models and VRMA animations in the browser side panel.",
+  "version": "0.1.0",
+  "action": {
+    "default_title": "Open VRM Preview"
+  },
+  "background": {
+    "service_worker": "service-worker.js",
+    "type": "module"
+  },
+  "permissions": ["sidePanel", "storage"],
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "minimum_chrome_version": "116"
+}

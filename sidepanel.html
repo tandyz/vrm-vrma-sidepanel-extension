@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VRM / VRMA Side Panel</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <main class="app" id="app">
+      <section class="viewer" aria-label="Character viewer">
+        <canvas id="previewCanvas"></canvas>
+        <button class="panel-toggle" id="panelToggle" type="button" aria-expanded="true">
+          Hide Controls
+        </button>
+        <button class="head-adjust-toggle" id="headAdjustToggle" type="button" aria-expanded="false">
+          Head Adjust
+        </button>
+        <div class="head-adjust-ui" id="headAdjustUi" hidden>
+          <div class="head-adjust-ellipse" id="headAdjustEllipse"></div>
+          <div class="head-adjust-line head-adjust-line-x" id="headAdjustLineX"></div>
+          <div class="head-adjust-line head-adjust-line-y" id="headAdjustLineY"></div>
+          <div class="head-adjust-center" id="headAdjustCenter">+</div>
+          <button class="head-adjust-handle handle-left" data-head-handle="left" type="button" aria-label="Adjust left boundary"></button>
+          <button class="head-adjust-handle handle-right" data-head-handle="right" type="button" aria-label="Adjust right boundary"></button>
+          <button class="head-adjust-handle handle-top" data-head-handle="top" type="button" aria-label="Adjust top boundary"></button>
+          <button class="head-adjust-handle handle-bottom" data-head-handle="bottom" type="button" aria-label="Adjust bottom boundary"></button>
+          <div class="head-adjust-delta">
+            <span>Delta</span>
+            <button id="headDeltaDown" type="button">-</button>
+            <output id="headDeltaValue"></output>
+            <button id="headDeltaUp" type="button">+</button>
+          </div>
+        </div>
+        <div class="expression-bar" id="expressionBar" aria-label="Expressions"></div>
+        <div class="viewport-hint" id="viewportHint">Load a VRM file</div>
+      </section>
+
+      <section class="panel" id="controlPanel" aria-label="Controls">
+        <header class="brand">
+          <p>Side Panel Preview</p>
+          <h1>VRM / VRMA</h1>
+        </header>
+
+        <section class="drop-zone" id="dropZone">
+          <strong>Drop or choose files</strong>
+          <span>Load a VRM first, then a VRMA animation.</span>
+          <div class="file-row">
+            <label class="file-button">
+              <input id="vrmInput" type="file" accept=".vrm,model/gltf-binary" />
+              VRM
+            </label>
+            <label class="file-button">
+              <input id="vrmaInput" type="file" accept=".vrma,model/gltf-binary" />
+              VRMA
+            </label>
+          </div>
+        </section>
+
+        <section class="status-list" aria-live="polite">
+          <div><span>Model</span><strong id="modelName">None</strong></div>
+          <div><span>Motion</span><strong id="motionName">None</strong></div>
+          <div><span>Status</span><strong id="statusText">Ready</strong></div>
+        </section>
+
+        <section class="button-grid">
+          <button id="playPause" type="button" disabled>Play</button>
+          <button id="fitCamera" type="button" disabled>Fit</button>
+          <button id="resetPose" type="button" disabled>Reset</button>
+        </section>
+
+        <section class="control-group" aria-label="Animation">
+          <h2>Animation</h2>
+          <label>
+            <span>Speed</span>
+            <input id="speed" type="range" min="0.1" max="2" step="0.1" value="1" />
+            <output id="speedValue">1.0x</output>
+          </label>
+          <label class="check-row">
+            <input id="loop" type="checkbox" checked />
+            <span>Loop</span>
+          </label>
+        </section>
+
+        <section class="control-group" aria-label="Light">
+          <h2>Light</h2>
+          <label><span>Power</span><input id="lightIntensity" type="range" min="0" max="5" step="0.1" /><output id="lightIntensityValue"></output></label>
+          <label><span>X</span><input id="lightX" type="range" min="-5" max="5" step="0.1" /><output id="lightXValue"></output></label>
+          <label><span>Y</span><input id="lightY" type="range" min="-1" max="8" step="0.1" /><output id="lightYValue"></output></label>
+          <label><span>Z</span><input id="lightZ" type="range" min="-5" max="5" step="0.1" /><output id="lightZValue"></output></label>
+        </section>
+
+        <section class="control-group" aria-label="Camera">
+          <h2>Camera</h2>
+          <label><span>Up</span><input id="cameraY" type="range" min="0" max="2.5" step="0.01" /><output id="cameraYValue"></output></label>
+          <label><span>Zoom</span><input id="cameraZoom" type="range" min="0.8" max="6" step="0.05" /><output id="cameraZoomValue"></output></label>
+          <label><span>Pitch</span><input id="cameraPitch" type="range" min="-30" max="45" step="1" /><output id="cameraPitchValue"></output></label>
+        </section>
+
+        <section class="control-group gaze-range-group" aria-label="Random gaze range">
+          <h2>Random Gaze</h2>
+          <div class="step-control">
+            <span>Left</span>
+            <button class="step-button" data-gaze-range="left" data-gaze-delta="-1" type="button">-</button>
+            <output id="gazeLeftValue"></output>
+            <button class="step-button" data-gaze-range="left" data-gaze-delta="1" type="button">+</button>
+          </div>
+          <div class="step-control">
+            <span>Right</span>
+            <button class="step-button" data-gaze-range="right" data-gaze-delta="-1" type="button">-</button>
+            <output id="gazeRightValue"></output>
+            <button class="step-button" data-gaze-range="right" data-gaze-delta="1" type="button">+</button>
+          </div>
+          <div class="step-control">
+            <span>Up</span>
+            <button class="step-button" data-gaze-range="up" data-gaze-delta="-1" type="button">-</button>
+            <output id="gazeUpValue"></output>
+            <button class="step-button" data-gaze-range="up" data-gaze-delta="1" type="button">+</button>
+          </div>
+          <div class="step-control">
+            <span>Down</span>
+            <button class="step-button" data-gaze-range="down" data-gaze-delta="-1" type="button">-</button>
+            <output id="gazeDownValue"></output>
+            <button class="step-button" data-gaze-range="down" data-gaze-delta="1" type="button">+</button>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
