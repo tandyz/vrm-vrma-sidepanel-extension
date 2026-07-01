@@ -8,6 +8,11 @@ export default defineConfig({
       input: {
         sidepanel: "sidepanel.html",
       },
+      output: {
+        entryFileNames: "assets/[name].js",
+        chunkFileNames: "assets/[name].js",
+        assetFileNames: "assets/[name][extname]",
+      },
     },
   },
 });

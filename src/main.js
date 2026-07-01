@@ -67,7 +67,6 @@ const animationFolderMissingText = "애니 폴더를 지정하세요";
 const animationFileMissingText = "파일을 애니폴더에 넣고 새로고침 하시오";
 const settingsFileVersion = 1;
 const animationFadeSeconds = 0.3;
-const returnToIdleDelaySeconds = 3;
 
 const sliders = {
   lightIntensity: bindSlider("lightIntensity", 1),
@@ -86,13 +85,10 @@ const defaultSettings = {
   headAdjust: { radiusX: 0.36, radiusY: 0.38, delta: 18 },
   expressionBlink: {},
   animationFolderName: "",
-  animationSlots: Array.from({ length: animationSlotCount }, (_, index) => ({
-    name: `Animation ${index + 1}`,
-    fileName: "",
-    actionEnabled: true,
-    loop: true,
-    expression: "neutral",
-  })),
+  animationSlots: Array.from({ length: animationSlotCount }, (_, index) => createAnimationSlot(
+    index === 0 ? "idle" : "action",
+    index === 0 ? "Idle 0" : `Animation ${index + 1}`,
+  )),
   controlsOpen: true,
 };
 
@@ -437,12 +433,28 @@ function stepHeadDelta(delta) {
   updateHeadDeltaOutput();
 }
 
+function createAnimationSlot(kind = "action", name = "") {
+  return {
+    kind,
+    name: name || (kind === "idle" ? "Idle" : "Animation"),
+    fileName: "",
+    actionEnabled: kind === "idle",
+    loop: true,
+    expression: "neutral",
+  };
+}
+
 function normalizeAnimationSlots(slots = []) {
-  return Array.from({ length: animationSlotCount }, (_, index) => {
-    const slot = slots[index] ?? {};
+  const sourceSlots = slots.length ? slots : defaultSettings.animationSlots;
+
+  return sourceSlots.map((slot = {}, index) => {
+    const kind = slot.kind === "idle" || slot.kind === "action"
+      ? slot.kind
+      : index === 0 ? "idle" : "action";
 
     return {
-      name: String(slot.name || `Animation ${index + 1}`),
+      kind,
+      name: String(slot.name || (kind === "idle" ? `Idle ${index}` : `Animation ${index + 1}`)),
       fileName: String(slot.fileName || ""),
       actionEnabled: slot.actionEnabled !== false,
       loop: slot.loop !== false,
@@ -455,7 +467,48 @@ function renderAnimationSlots() {
   animationFolderButton.textContent = settings.animationFolderName || "Select animation folder";
   animationSlotList.replaceChildren();
 
-  settings.animationSlots.forEach((slot, index) => {
+  renderAnimationSlotSection("idle");
+  renderAnimationSlotDivider();
+  renderAnimationSlotSection("action");
+
+  renderViewerAnimationActions();
+}
+
+function renderAnimationSlotSection(kind) {
+  const section = document.createElement("div");
+  const title = document.createElement("div");
+  const addButton = document.createElement("button");
+  const slots = settings.animationSlots
+    .map((slot, index) => ({ slot, index }))
+    .filter((entry) => entry.slot.kind === kind);
+
+  section.className = "animation-slot-section";
+  title.className = "animation-slot-section-title";
+  title.textContent = kind === "idle" ? "Idle" : "Actions";
+  section.append(title);
+
+  slots.forEach(({ slot, index }) => {
+    section.append(createAnimationSlotRow(slot, index));
+  });
+
+  addButton.className = "animation-slot-add";
+  addButton.type = "button";
+  addButton.textContent = "+";
+  addButton.title = kind === "idle" ? "Add idle slot" : "Add animation slot";
+  addButton.addEventListener("click", () => addAnimationSlot(kind));
+  section.append(addButton);
+
+  animationSlotList.append(section);
+}
+
+function renderAnimationSlotDivider() {
+  const divider = document.createElement("div");
+
+  divider.className = "animation-slot-divider";
+  animationSlotList.append(divider);
+}
+
+function createAnimationSlotRow(slot, index) {
     const state = animationSlotStates[index] ?? {};
     const row = document.createElement("div");
     const actionToggleLabel = document.createElement("label");
@@ -532,10 +585,20 @@ function renderAnimationSlots() {
     });
 
     row.append(actionToggleLabel, nameGroup, expressionSelect, fileButton, chooseButton);
-    animationSlotList.append(row);
-  });
+    return row;
+}
 
-  renderViewerAnimationActions();
+function addAnimationSlot(kind) {
+  const count = settings.animationSlots.filter((slot) => slot.kind === kind).length;
+  const slot = createAnimationSlot(
+    kind,
+    kind === "idle" ? `Idle ${count}` : `Animation ${settings.animationSlots.length + 1}`,
+  );
+
+  settings.animationSlots.push(slot);
+  animationSlotStates.push({ available: false });
+  renderAnimationSlots();
+  void saveSettings();
 }
 
 function getExpressionSelectNames() {
@@ -1087,10 +1150,7 @@ function playClip(clip, label, options = {}) {
 
       mixer.removeEventListener("finished", activeFinishedHandler);
       activeFinishedHandler = null;
-      pendingIdleTimeout = setTimeout(() => {
-        pendingIdleTimeout = null;
-        void playIdleAnimation(options.slotIndex);
-      }, returnToIdleDelaySeconds * 1000);
+      void playIdleAnimation(options.slotIndex);
     };
     mixer.addEventListener("finished", activeFinishedHandler);
   }
@@ -1110,14 +1170,11 @@ async function playIdleAnimation(currentSlotIndex = null) {
 
 function findIdleAnimationSlotIndex(excludeIndex = null) {
   return settings.animationSlots.findIndex((slot, index) => {
-    if (index === excludeIndex || !slot.fileName || animationSlotStates[index]?.available !== true) {
+    if (index === excludeIndex || slot.kind !== "idle" || !slot.fileName || animationSlotStates[index]?.available !== true) {
       return false;
     }
 
-    const name = slot.name.toLowerCase();
-    const fileName = slot.fileName.toLowerCase().replace(/\.vrma$/i, "");
-
-    return name === "idle" || fileName === "idle";
+    return true;
   });
 }
 
@@ -1132,10 +1189,7 @@ function isIdleAnimationSlotIndex(index) {
     return true;
   }
 
-  const name = slot.name.toLowerCase();
-  const fileName = slot.fileName.toLowerCase().replace(/\.vrma$/i, "");
-
-  return name === "idle" || fileName === "idle";
+  return slot.kind === "idle";
 }
 
 function canUsePointerGaze() {

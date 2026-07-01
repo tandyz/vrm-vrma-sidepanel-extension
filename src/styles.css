@@ -601,7 +601,35 @@ button:disabled {
 
 .animation-slot-list {
   display: grid;
+  gap: 8px;
+}
+
+.animation-slot-section {
+  display: grid;
   gap: 6px;
+}
+
+.animation-slot-section-title {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.animation-slot-divider {
+  height: 1px;
+  background: var(--line);
+}
+
+.animation-slot-add {
+  min-height: 32px;
+  border-color: #24bf40;
+  background: #ffffff;
+  color: #1fb33b;
+  font-size: 22px;
+  line-height: 1;
+  padding: 0;
 }
 
 .animation-slot-row {
