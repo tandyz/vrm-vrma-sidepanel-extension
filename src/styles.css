@@ -128,6 +128,37 @@ input {
   accent-color: #67d9ac;
 }
 
+.viewer-animation-actions {
+  position: absolute;
+  top: 146px;
+  right: 12px;
+  bottom: 130px;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-end;
+  overflow-y: auto;
+  pointer-events: none;
+}
+
+.viewer-animation-action-button {
+  width: 86px;
+  min-height: 34px;
+  border-color: rgb(255 255 255 / 0.2);
+  background: rgb(15 23 28 / 0.82);
+  color: #f3faf6;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 0 8px;
+  pointer-events: auto;
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.22);
+  backdrop-filter: blur(8px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .panel-toggle {
   position: absolute;
   top: 10px;
@@ -140,6 +171,88 @@ input {
   padding: 0 12px;
   box-shadow: 0 10px 30px rgb(0 0 0 / 0.22);
   backdrop-filter: blur(8px);
+}
+
+.light-toggle {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 3;
+  width: 38px;
+  min-height: 34px;
+  border-color: rgb(255 255 255 / 0.2);
+  background: rgb(15 23 28 / 0.8);
+  color: #f3faf6;
+  padding: 0;
+  font-size: 17px;
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.22);
+  backdrop-filter: blur(8px);
+}
+
+.light-toggle::before {
+  content: "";
+  width: 16px;
+  height: 16px;
+  border: 3px dotted currentColor;
+  border-radius: 50%;
+}
+
+.camera-overlay,
+.light-overlay {
+  position: absolute;
+  left: 10px;
+  z-index: 3;
+  display: grid;
+  width: min(240px, calc(100% - 150px));
+  gap: 9px;
+  border: 1px solid rgb(255 255 255 / 0.18);
+  border-radius: 8px;
+  background: rgb(15 23 28 / 0.86);
+  color: #f3faf6;
+  padding: 10px;
+  box-shadow: 0 12px 36px rgb(0 0 0 / 0.26);
+  backdrop-filter: blur(8px);
+}
+
+.camera-overlay[hidden],
+.light-overlay[hidden] {
+  display: none;
+}
+
+.camera-overlay {
+  top: 52px;
+}
+
+.light-overlay {
+  top: 184px;
+}
+
+.camera-overlay h2,
+.light-overlay h2 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.camera-overlay label,
+.light-overlay label {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) 48px;
+  gap: 8px;
+  align-items: center;
+}
+
+.camera-overlay span,
+.camera-overlay output,
+.light-overlay span,
+.light-overlay output {
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.camera-overlay output,
+.light-overlay output {
+  color: #cfe0d8;
+  text-align: right;
 }
 
 .head-adjust-toggle {
@@ -157,6 +270,7 @@ input {
 }
 
 .panel-toggle:hover,
+.light-toggle:hover,
 .head-adjust-toggle:hover,
 .expression-button:hover:not(:disabled) {
   border-color: rgb(255 255 255 / 0.38);
@@ -349,6 +463,7 @@ input {
 }
 
 .file-row,
+.settings-file-row,
 .button-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
@@ -375,6 +490,14 @@ button {
 
 .file-button input {
   display: none;
+}
+
+.settings-file-row button {
+  min-height: 34px;
+  border-color: var(--line);
+  background: #f4f8f5;
+  color: var(--accent-strong);
+  padding: 0 10px;
 }
 
 button:disabled {
@@ -483,11 +606,28 @@ button:disabled {
 
 .animation-slot-row {
   display: grid;
-  grid-template-columns: minmax(82px, 0.8fr) minmax(0, 1.4fr) 34px;
+  grid-template-columns: 22px 148px 72px minmax(0, 1fr) 32px;
   gap: 6px;
+  align-items: center;
 }
 
+.control-group .animation-slot-action-toggle {
+  display: grid;
+  min-height: 32px;
+  grid-template-columns: 1fr;
+  place-items: center;
+  gap: 0;
+}
+
+.animation-slot-action-toggle input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+}
+
+.control-group .animation-slot-name-group,
 .animation-slot-name,
+.animation-slot-expression,
 .animation-slot-file {
   min-width: 0;
   min-height: 32px;
@@ -498,8 +638,32 @@ button:disabled {
   padding: 0 8px;
 }
 
+.control-group .animation-slot-name-group {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 18px;
+  gap: 5px;
+  align-items: center;
+}
+
+.animation-slot-name-group input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+}
+
 .animation-slot-name {
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
   font-weight: 700;
+  text-align: left;
+}
+
+.animation-slot-expression {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 0 4px;
 }
 
 .animation-slot-file {

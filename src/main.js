@@ -10,6 +10,9 @@ const canvas = document.querySelector("#previewCanvas");
 const app = document.querySelector("#app");
 const panelToggle = document.querySelector("#panelToggle");
 const headAdjustToggle = document.querySelector("#headAdjustToggle");
+const cameraOverlay = document.querySelector("#cameraOverlay");
+const lightToggle = document.querySelector("#lightToggle");
+const lightOverlay = document.querySelector("#lightOverlay");
 const viewer = document.querySelector(".viewer");
 const headAdjustUi = document.querySelector("#headAdjustUi");
 const headAdjustEllipse = document.querySelector("#headAdjustEllipse");
@@ -20,10 +23,14 @@ const headAdjustHandles = [...document.querySelectorAll("[data-head-handle]")];
 const headDeltaDown = document.querySelector("#headDeltaDown");
 const headDeltaUp = document.querySelector("#headDeltaUp");
 const headDeltaValue = document.querySelector("#headDeltaValue");
+const viewerAnimationActions = document.querySelector("#viewerAnimationActions");
 const controlPanel = document.querySelector("#controlPanel");
 const dropZone = document.querySelector("#dropZone");
 const vrmInput = document.querySelector("#vrmInput");
 const vrmaInput = document.querySelector("#vrmaInput");
+const saveSettingsFile = document.querySelector("#saveSettingsFile");
+const loadSettingsFile = document.querySelector("#loadSettingsFile");
+const settingsFileInput = document.querySelector("#settingsFileInput");
 const modelName = document.querySelector("#modelName");
 const motionName = document.querySelector("#motionName");
 const statusText = document.querySelector("#statusText");
@@ -58,6 +65,9 @@ const animationDbName = "vrm-vrma-sidepanel-files";
 const animationDbStore = "handles";
 const animationFolderMissingText = "애니 폴더를 지정하세요";
 const animationFileMissingText = "파일을 애니폴더에 넣고 새로고침 하시오";
+const settingsFileVersion = 1;
+const animationFadeSeconds = 0.3;
+const returnToIdleDelaySeconds = 3;
 
 const sliders = {
   lightIntensity: bindSlider("lightIntensity", 1),
@@ -79,6 +89,9 @@ const defaultSettings = {
   animationSlots: Array.from({ length: animationSlotCount }, (_, index) => ({
     name: `Animation ${index + 1}`,
     fileName: "",
+    actionEnabled: true,
+    loop: true,
+    expression: "neutral",
   })),
   controlsOpen: true,
 };
@@ -109,6 +122,9 @@ let mixer = null;
 let action = null;
 let isPlaying = false;
 let animationHasEyeKeyframes = false;
+let pendingIdleTimeout = null;
+let activeFinishedHandler = null;
+let currentPlaybackSlotIndex = null;
 let activeExpression = "neutral";
 let expressionNames = ["neutral"];
 let expressionTransition = null;
@@ -211,6 +227,64 @@ async function saveSettings() {
   }
 
   localStorage.setItem("vrmVrmaSidePanelSettings", JSON.stringify(settings));
+}
+
+function getPortableSettings() {
+  return {
+    light: settings.light,
+    camera: settings.camera,
+    gazeRange: settings.gazeRange,
+    headAdjust: settings.headAdjust,
+    expressionBlink: settings.expressionBlink,
+    animationFolderName: settings.animationFolderName,
+    animationSlots: settings.animationSlots,
+    controlsOpen: settings.controlsOpen,
+  };
+}
+
+function downloadSettingsFile() {
+  const payload = {
+    version: settingsFileVersion,
+    savedAt: new Date().toISOString(),
+    settings: getPortableSettings(),
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+
+  link.href = url;
+  link.download = "vrm-vrma-sidepanel-settings.json";
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  setStatus("Settings file saved");
+}
+
+function openSettingsFilePicker() {
+  settingsFileInput.value = "";
+  settingsFileInput.click();
+}
+
+async function loadSettingsFilePayload(file) {
+  if (!file) {
+    return;
+  }
+
+  try {
+    const payload = JSON.parse(await file.text());
+    const importedSettings = payload.settings ?? payload;
+
+    settings = mergeSettings(settings, importedSettings);
+    await saveSettings();
+    syncControlsFromSettings();
+    renderExpressionButtons(Boolean(currentVrm));
+    setExpressionButtonsEnabled(Boolean(currentVrm));
+    await refreshAnimationSlots();
+    setStatus("Settings file loaded");
+  } catch (error) {
+    setStatus(error.message || "Failed to load settings file", true);
+  }
 }
 
 function openAnimationDb() {
@@ -342,6 +416,18 @@ function toggleHeadAdjustUi() {
   }
 }
 
+function toggleSettingsOverlay() {
+  const nextOpen = cameraOverlay.hidden && lightOverlay.hidden;
+
+  cameraOverlay.hidden = !nextOpen;
+  lightOverlay.hidden = !nextOpen;
+  lightToggle.setAttribute("aria-expanded", String(nextOpen));
+
+  if (!nextOpen) {
+    void saveSettings();
+  }
+}
+
 function updateHeadDeltaOutput() {
   headDeltaValue.textContent = settings.headAdjust.delta.toFixed(0);
 }
@@ -358,6 +444,9 @@ function normalizeAnimationSlots(slots = []) {
     return {
       name: String(slot.name || `Animation ${index + 1}`),
       fileName: String(slot.fileName || ""),
+      actionEnabled: slot.actionEnabled !== false,
+      loop: slot.loop !== false,
+      expression: String(slot.expression || "neutral"),
     };
   });
 }
@@ -369,17 +458,60 @@ function renderAnimationSlots() {
   settings.animationSlots.forEach((slot, index) => {
     const state = animationSlotStates[index] ?? {};
     const row = document.createElement("div");
+    const actionToggleLabel = document.createElement("label");
+    const actionToggle = document.createElement("input");
+    const nameGroup = document.createElement("label");
+    const loopToggle = document.createElement("input");
     const nameInput = document.createElement("input");
+    const expressionSelect = document.createElement("select");
     const fileButton = document.createElement("button");
     const chooseButton = document.createElement("button");
 
     row.className = "animation-slot-row";
+
+    actionToggle.type = "checkbox";
+    actionToggle.checked = slot.actionEnabled !== false;
+    actionToggle.title = "Show viewer action button";
+    actionToggle.addEventListener("change", () => {
+      settings.animationSlots[index].actionEnabled = actionToggle.checked;
+      renderViewerAnimationActions();
+      void saveSettings();
+    });
+
+    actionToggleLabel.className = "animation-slot-action-toggle";
+    actionToggleLabel.append(actionToggle);
+
+    loopToggle.type = "checkbox";
+    loopToggle.checked = slot.loop !== false;
+    loopToggle.title = "Loop this animation";
+    loopToggle.addEventListener("change", () => {
+      settings.animationSlots[index].loop = loopToggle.checked;
+      void saveSettings();
+    });
 
     nameInput.className = "animation-slot-name";
     nameInput.value = slot.name;
     nameInput.placeholder = `Animation ${index + 1}`;
     nameInput.addEventListener("change", () => {
       settings.animationSlots[index].name = nameInput.value.trim() || `Animation ${index + 1}`;
+      renderViewerAnimationActions();
+      void saveSettings();
+    });
+
+    nameGroup.className = "animation-slot-name-group";
+    nameGroup.append(nameInput, loopToggle);
+
+    expressionSelect.className = "animation-slot-expression";
+    getExpressionSelectNames().forEach((expressionName) => {
+      const option = document.createElement("option");
+
+      option.value = expressionName;
+      option.textContent = formatExpressionLabel(expressionName);
+      expressionSelect.append(option);
+    });
+    expressionSelect.value = getExpressionSelectNames().includes(slot.expression) ? slot.expression : "neutral";
+    expressionSelect.addEventListener("change", () => {
+      settings.animationSlots[index].expression = expressionSelect.value;
       void saveSettings();
     });
 
@@ -399,9 +531,15 @@ function renderAnimationSlots() {
       openAnimationFilePicker(index);
     });
 
-    row.append(nameInput, fileButton, chooseButton);
+    row.append(actionToggleLabel, nameGroup, expressionSelect, fileButton, chooseButton);
     animationSlotList.append(row);
   });
+
+  renderViewerAnimationActions();
+}
+
+function getExpressionSelectNames() {
+  return expressionNames.length ? expressionNames : ["neutral"];
 }
 
 function getAnimationSlotFileText(slot, state) {
@@ -439,6 +577,31 @@ async function refreshAnimationSlots({ requestPermission = false } = {}) {
   }));
 
   renderAnimationSlots();
+}
+
+function renderViewerAnimationActions() {
+  viewerAnimationActions.replaceChildren();
+
+  settings.animationSlots.forEach((slot, index) => {
+    const state = animationSlotStates[index] ?? {};
+
+    if (slot.actionEnabled === false || !slot.fileName || state.available !== true) {
+      return;
+    }
+
+    const button = document.createElement("button");
+
+    button.className = "viewer-animation-action-button";
+    button.type = "button";
+    button.textContent = truncateKoreanButtonText(slot.name || `Animation ${index + 1}`);
+    button.title = slot.name || slot.fileName;
+    button.addEventListener("click", () => void handleAnimationSlotClick(index));
+    viewerAnimationActions.append(button);
+  });
+}
+
+function truncateKoreanButtonText(text) {
+  return [...String(text)].slice(0, 6).join("");
 }
 
 async function chooseAnimationFolder() {
@@ -485,7 +648,7 @@ async function handleAnimationSlotClick(index) {
   try {
     const fileHandle = await animationDirectoryHandle.getFileHandle(slot.fileName);
     const file = await fileHandle.getFile();
-    await loadVrma(file, slot.name || file.name);
+    await loadVrma(file, slot.name || file.name, getAnimationSlotPlaybackOptions(slot, index));
     animationSlotStates[index] = { available: true, fileHandle };
     renderAnimationSlots();
   } catch {
@@ -529,7 +692,20 @@ async function handleAnimationFileSelected(file) {
   settings.animationSlots[index].name ||= file.name.replace(/\.vrma$/i, "");
   await saveSettings();
   renderAnimationSlots();
-  await loadVrma(savedFile, settings.animationSlots[index].name || savedFile.name);
+  await loadVrma(
+    savedFile,
+    settings.animationSlots[index].name || savedFile.name,
+    getAnimationSlotPlaybackOptions(settings.animationSlots[index], index),
+  );
+}
+
+function getAnimationSlotPlaybackOptions(slot, index) {
+  return {
+    loop: slot.loop !== false,
+    expression: slot.expression || "neutral",
+    returnToIdle: slot.loop === false,
+    slotIndex: index,
+  };
 }
 
 function getAnchorPixelPosition() {
@@ -789,6 +965,11 @@ function resetVrmToRestPose() {
 }
 
 function clearAnimation() {
+  clearPendingIdleReturn();
+  if (mixer && activeFinishedHandler) {
+    mixer.removeEventListener("finished", activeFinishedHandler);
+  }
+  activeFinishedHandler = null;
   action?.stop();
   mixer?.stopAllAction();
   mixer?.uncacheRoot(currentVrm?.scene ?? scene);
@@ -796,8 +977,16 @@ function clearAnimation() {
   action = null;
   isPlaying = false;
   animationHasEyeKeyframes = false;
+  currentPlaybackSlotIndex = null;
   playPause.textContent = "Play";
   playPause.disabled = true;
+}
+
+function clearPendingIdleReturn() {
+  if (pendingIdleTimeout !== null) {
+    clearTimeout(pendingIdleTimeout);
+    pendingIdleTimeout = null;
+  }
 }
 
 function clearVrm() {
@@ -843,21 +1032,114 @@ function setPlayback(nextPlaying) {
   playPause.textContent = isPlaying ? "Pause" : "Play";
 }
 
-function playClip(clip, label) {
-  clearAnimation();
+function playClip(clip, label, options = {}) {
+  clearPendingIdleReturn();
+  if (mixer && activeFinishedHandler) {
+    mixer.removeEventListener("finished", activeFinishedHandler);
+    activeFinishedHandler = null;
+  }
+
   animationHasEyeKeyframes = clipHasEyeBoneKeyframes(clip);
   if (animationHasEyeKeyframes) {
     removeAppliedHeadOffset();
     resetHeadTurnTransition();
   }
-  mixer = new THREE.AnimationMixer(currentVrm.scene);
+
+  const previousAction = action;
+  const shouldLoop = options.loop ?? loop.checked;
+  currentPlaybackSlotIndex = Number.isInteger(options.slotIndex) ? options.slotIndex : null;
+
+  mixer ??= new THREE.AnimationMixer(currentVrm.scene);
   action = mixer.clipAction(clip);
-  action.setLoop(loop.checked ? THREE.LoopRepeat : THREE.LoopOnce);
+  action.reset();
+  action.enabled = true;
+  action.setEffectiveWeight(1);
+  action.setEffectiveTimeScale(Number(speed.value));
+  action.setLoop(shouldLoop ? THREE.LoopRepeat : THREE.LoopOnce, shouldLoop ? Infinity : 1);
   action.clampWhenFinished = true;
   action.timeScale = Number(speed.value);
+
+  if (options.expression && expressionNames.includes(options.expression)) {
+    applyExpression(options.expression);
+  }
+
   motionName.textContent = label;
   playPause.disabled = false;
-  setPlayback(true);
+  isPlaying = true;
+  action.paused = false;
+  playPause.textContent = "Pause";
+
+  if (previousAction && previousAction !== action) {
+    previousAction.fadeOut(animationFadeSeconds);
+    action.fadeIn(animationFadeSeconds);
+    setTimeout(() => previousAction.stop(), animationFadeSeconds * 1000 + 80);
+  }
+
+  action.play();
+
+  if (!shouldLoop && options.returnToIdle) {
+    const finishedAction = action;
+
+    activeFinishedHandler = (event) => {
+      if (event.action !== finishedAction) {
+        return;
+      }
+
+      mixer.removeEventListener("finished", activeFinishedHandler);
+      activeFinishedHandler = null;
+      pendingIdleTimeout = setTimeout(() => {
+        pendingIdleTimeout = null;
+        void playIdleAnimation(options.slotIndex);
+      }, returnToIdleDelaySeconds * 1000);
+    };
+    mixer.addEventListener("finished", activeFinishedHandler);
+  }
+}
+
+async function playIdleAnimation(currentSlotIndex = null) {
+  if (animationDirectoryHandle && !animationSlotStates.some((state) => state.available)) {
+    await refreshAnimationSlots();
+  }
+
+  const idleIndex = findIdleAnimationSlotIndex(currentSlotIndex);
+
+  if (idleIndex >= 0) {
+    await handleAnimationSlotClick(idleIndex);
+  }
+}
+
+function findIdleAnimationSlotIndex(excludeIndex = null) {
+  return settings.animationSlots.findIndex((slot, index) => {
+    if (index === excludeIndex || !slot.fileName || animationSlotStates[index]?.available !== true) {
+      return false;
+    }
+
+    const name = slot.name.toLowerCase();
+    const fileName = slot.fileName.toLowerCase().replace(/\.vrma$/i, "");
+
+    return name === "idle" || fileName === "idle";
+  });
+}
+
+function isIdleAnimationSlotIndex(index) {
+  if (!Number.isInteger(index)) {
+    return true;
+  }
+
+  const slot = settings.animationSlots[index];
+
+  if (!slot) {
+    return true;
+  }
+
+  const name = slot.name.toLowerCase();
+  const fileName = slot.fileName.toLowerCase().replace(/\.vrma$/i, "");
+
+  return name === "idle" || fileName === "idle";
+}
+
+function canUsePointerGaze() {
+  return !action || isIdleAnimationSlotIndex(currentPlaybackSlotIndex);
 }
 
 function fitCameraToVrm({ persist = true } = {}) {
@@ -1357,7 +1639,7 @@ function handleViewerClick(event) {
 }
 
 function handleViewerGazeInput(event, options = {}) {
-  if (!currentVrm) {
+  if (!currentVrm || !canUsePointerGaze()) {
     return;
   }
 
@@ -1373,7 +1655,7 @@ function handleViewerButtonPointerOver(event) {
     !button ||
     !viewer.contains(button) ||
     button.disabled ||
-    button.classList.contains("expression-button") ||
+    isViewerHoverGazeExcludedButton(button) ||
     !currentVrm
   ) {
     return;
@@ -1387,7 +1669,7 @@ function handleViewerButtonPointerOver(event) {
 function handleViewerButtonPointerOut(event) {
   const button = event.target.closest("button");
 
-  if (!button || !viewer.contains(button) || button.classList.contains("expression-button")) {
+  if (!button || !viewer.contains(button) || isViewerHoverGazeExcludedButton(button)) {
     return;
   }
 
@@ -1400,8 +1682,15 @@ function handleViewerButtonPointerOut(event) {
   headReturnHold = 0.5;
 }
 
+function isViewerHoverGazeExcludedButton(button) {
+  return (
+    button.classList.contains("expression-button") ||
+    button.classList.contains("viewer-animation-action-button")
+  );
+}
+
 function handleViewerPointerDown(event) {
-  if (event.target !== canvas || !currentVrm) {
+  if (event.target !== canvas || !currentVrm || !canUsePointerGaze()) {
     return;
   }
 
@@ -1542,6 +1831,16 @@ function refreshMToonMaterials() {
   });
 }
 
+function optimizeVrmScene(root) {
+  VRMUtils.removeUnnecessaryVertices(root);
+
+  try {
+    VRMUtils.combineSkeletons(root);
+  } catch (error) {
+    console.warn("VRM skeleton optimization skipped.", error);
+  }
+}
+
 async function loadVrm(file) {
   if (!file) {
     return;
@@ -1564,8 +1863,7 @@ async function loadVrm(file) {
       throw new Error("VRM avatar was not found in this file.");
     }
 
-    VRMUtils.removeUnnecessaryVertices(gltf.scene);
-    VRMUtils.removeUnnecessaryJoints(gltf.scene);
+    optimizeVrmScene(gltf.scene);
     VRMUtils.rotateVRM0(vrm);
 
     currentVrm = vrm;
@@ -1580,6 +1878,7 @@ async function loadVrm(file) {
     expressionNames = getAvailableExpressionNames();
     activeExpression = "neutral";
     renderExpressionButtons(true);
+    renderAnimationSlots();
     applyExpression("neutral");
     modelName.textContent = file.name;
     viewportHint.classList.add("is-hidden");
@@ -1589,13 +1888,14 @@ async function loadVrm(file) {
     updateGazeAnchorFromVrm();
     resetGaze();
     setStatus("VRM loaded with MToon");
+    await playIdleAnimation();
   } catch (error) {
     clearVrm();
     setStatus(error.message || "Failed to load VRM", true);
   }
 }
 
-async function loadVrma(file, label = file?.name) {
+async function loadVrma(file, label = file?.name, playbackOptions = {}) {
   if (!file) {
     return;
   }
@@ -1605,7 +1905,6 @@ async function loadVrma(file, label = file?.name) {
     return;
   }
 
-  clearAnimation();
   setStatus("Loading VRMA...");
 
   if (lastVrmaUrl) {
@@ -1622,11 +1921,9 @@ async function loadVrma(file, label = file?.name) {
       throw new Error("VRMA animation was not found in this file.");
     }
 
-    playClip(createVRMAnimationClip(vrmAnimations[0], currentVrm), label || file.name);
+    playClip(createVRMAnimationClip(vrmAnimations[0], currentVrm), label || file.name, playbackOptions);
     setStatus("VRMA playing");
   } catch (error) {
-    clearAnimation();
-    motionName.textContent = "None";
     setStatus(error.message || "Failed to load VRMA", true);
   }
 }
@@ -1662,6 +1959,11 @@ function wireSlider(id, section, property, suffix = "") {
 
 vrmInput.addEventListener("change", () => loadVrm(vrmInput.files[0]));
 vrmaInput.addEventListener("change", () => loadVrma(vrmaInput.files[0]));
+saveSettingsFile.addEventListener("click", downloadSettingsFile);
+loadSettingsFile.addEventListener("click", openSettingsFilePicker);
+settingsFileInput.addEventListener("change", () => {
+  void loadSettingsFilePayload(settingsFileInput.files[0]);
+});
 animationFolderButton.addEventListener("click", () => void chooseAnimationFolder());
 animationRefresh.addEventListener("click", () => void refreshAnimationSlots({ requestPermission: true }));
 animationFileInput.addEventListener("change", () => {
@@ -1706,6 +2008,7 @@ loop.addEventListener("change", () => {
 });
 panelToggle.addEventListener("click", toggleControlPanel);
 headAdjustToggle.addEventListener("click", toggleHeadAdjustUi);
+lightToggle.addEventListener("click", toggleSettingsOverlay);
 canvas.addEventListener("pointerdown", handleViewerPointerDown);
 canvas.addEventListener("pointermove", handleViewerPointerMove);
 canvas.addEventListener("pointerup", handleViewerPointerUp);
