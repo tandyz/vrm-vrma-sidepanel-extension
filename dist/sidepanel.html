@@ -4,8 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>VRM / VRMA Side Panel</title>
-    <script type="module" crossorigin src="/assets/sidepanel-B8Q_mCRq.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/sidepanel-BhB9G7Ou.css">
+    <script type="module" crossorigin src="/assets/sidepanel-Cw3DXLDr.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/sidepanel-PGoSR88h.css">
   </head>
   <body>
     <main class="app" id="app">
@@ -81,6 +81,18 @@
             <input id="loop" type="checkbox" checked />
             <span>Loop</span>
           </label>
+        </section>
+
+        <section class="control-group animation-slots" aria-label="Animation slots">
+          <div class="animation-slots-header">
+            <h2>Animation Slots</h2>
+            <button id="animationRefresh" type="button" title="Refresh animation folder">Refresh</button>
+          </div>
+          <button class="animation-folder-button" id="animationFolderButton" type="button">
+            Select animation folder
+          </button>
+          <div class="animation-slot-list" id="animationSlotList"></div>
+          <input id="animationFileInput" type="file" accept=".vrma,model/gltf-binary" hidden />
         </section>
 
         <section class="control-group" aria-label="Light">

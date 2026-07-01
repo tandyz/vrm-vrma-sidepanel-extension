@@ -33,6 +33,10 @@ const resetPose = document.querySelector("#resetPose");
 const speed = document.querySelector("#speed");
 const speedValue = document.querySelector("#speedValue");
 const loop = document.querySelector("#loop");
+const animationRefresh = document.querySelector("#animationRefresh");
+const animationFolderButton = document.querySelector("#animationFolderButton");
+const animationSlotList = document.querySelector("#animationSlotList");
+const animationFileInput = document.querySelector("#animationFileInput");
 const viewportHint = document.querySelector("#viewportHint");
 const expressionBar = document.querySelector("#expressionBar");
 const gazeRangeOutputs = {
@@ -48,6 +52,12 @@ const clickGazeScale = 2.4;
 const randomHeadScale = 0.18;
 const maxClickHeadYaw = THREE.MathUtils.degToRad(30);
 const maxClickHeadPitch = THREE.MathUtils.degToRad(20);
+const animationSlotCount = 8;
+const animationFolderHandleKey = "animationFolderHandle";
+const animationDbName = "vrm-vrma-sidepanel-files";
+const animationDbStore = "handles";
+const animationFolderMissingText = "애니 폴더를 지정하세요";
+const animationFileMissingText = "파일을 애니폴더에 넣고 새로고침 하시오";
 
 const sliders = {
   lightIntensity: bindSlider("lightIntensity", 1),
@@ -65,6 +75,11 @@ const defaultSettings = {
   gazeRange: { left: -5, right: 5, up: 3, down: -3 },
   headAdjust: { radiusX: 0.36, radiusY: 0.38, delta: 18 },
   expressionBlink: {},
+  animationFolderName: "",
+  animationSlots: Array.from({ length: animationSlotCount }, (_, index) => ({
+    name: `Animation ${index + 1}`,
+    fileName: "",
+  })),
   controlsOpen: true,
 };
 
@@ -99,6 +114,9 @@ let expressionNames = ["neutral"];
 let expressionTransition = null;
 let lastVrmUrl = null;
 let lastVrmaUrl = null;
+let animationDirectoryHandle = null;
+let activeAnimationSlotIndex = null;
+let animationSlotStates = [];
 let blinkExpressionNames = [];
 let blinkElapsed = 0;
 let blinkInterval = getNextBlinkInterval();
@@ -195,6 +213,60 @@ async function saveSettings() {
   localStorage.setItem("vrmVrmaSidePanelSettings", JSON.stringify(settings));
 }
 
+function openAnimationDb() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(animationDbName, 1);
+
+    request.onupgradeneeded = () => {
+      request.result.createObjectStore(animationDbStore);
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function getStoredHandle(key) {
+  const db = await openAnimationDb();
+
+  return new Promise((resolve, reject) => {
+    const request = db
+      .transaction(animationDbStore, "readonly")
+      .objectStore(animationDbStore)
+      .get(key);
+
+    request.onsuccess = () => resolve(request.result ?? null);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function setStoredHandle(key, handle) {
+  const db = await openAnimationDb();
+
+  return new Promise((resolve, reject) => {
+    const request = db
+      .transaction(animationDbStore, "readwrite")
+      .objectStore(animationDbStore)
+      .put(handle, key);
+
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function ensureHandlePermission(handle, mode = "read") {
+  if (!handle?.queryPermission || !handle?.requestPermission) {
+    return false;
+  }
+
+  const options = { mode };
+
+  if ((await handle.queryPermission(options)) === "granted") {
+    return true;
+  }
+
+  return (await handle.requestPermission(options)) === "granted";
+}
+
 function setStatus(message, isError = false) {
   statusText.textContent = message;
   statusText.style.color = isError ? "var(--danger)" : "";
@@ -277,6 +349,187 @@ function updateHeadDeltaOutput() {
 function stepHeadDelta(delta) {
   settings.headAdjust.delta = THREE.MathUtils.clamp(settings.headAdjust.delta + delta, 1, 120);
   updateHeadDeltaOutput();
+}
+
+function normalizeAnimationSlots(slots = []) {
+  return Array.from({ length: animationSlotCount }, (_, index) => {
+    const slot = slots[index] ?? {};
+
+    return {
+      name: String(slot.name || `Animation ${index + 1}`),
+      fileName: String(slot.fileName || ""),
+    };
+  });
+}
+
+function renderAnimationSlots() {
+  animationFolderButton.textContent = settings.animationFolderName || "Select animation folder";
+  animationSlotList.replaceChildren();
+
+  settings.animationSlots.forEach((slot, index) => {
+    const state = animationSlotStates[index] ?? {};
+    const row = document.createElement("div");
+    const nameInput = document.createElement("input");
+    const fileButton = document.createElement("button");
+    const chooseButton = document.createElement("button");
+
+    row.className = "animation-slot-row";
+
+    nameInput.className = "animation-slot-name";
+    nameInput.value = slot.name;
+    nameInput.placeholder = `Animation ${index + 1}`;
+    nameInput.addEventListener("change", () => {
+      settings.animationSlots[index].name = nameInput.value.trim() || `Animation ${index + 1}`;
+      void saveSettings();
+    });
+
+    fileButton.className = "animation-slot-file";
+    fileButton.type = "button";
+    fileButton.dataset.slotIndex = String(index);
+    fileButton.textContent = getAnimationSlotFileText(slot, state);
+    fileButton.title = slot.fileName || fileButton.textContent;
+    fileButton.addEventListener("click", () => void handleAnimationSlotClick(index));
+
+    chooseButton.className = "animation-slot-choose";
+    chooseButton.type = "button";
+    chooseButton.textContent = "...";
+    chooseButton.title = "Choose animation file";
+    chooseButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openAnimationFilePicker(index);
+    });
+
+    row.append(nameInput, fileButton, chooseButton);
+    animationSlotList.append(row);
+  });
+}
+
+function getAnimationSlotFileText(slot, state) {
+  if ((!animationDirectoryHandle || state.needsFolder) && slot.fileName) {
+    return animationFolderMissingText;
+  }
+
+  if (animationDirectoryHandle && slot.fileName && state.available === false) {
+    return animationFileMissingText;
+  }
+
+  return slot.fileName || "Select animation file";
+}
+
+async function refreshAnimationSlots({ requestPermission = false } = {}) {
+  const hasDirectory = animationDirectoryHandle
+    ? await ensureHandlePermission(animationDirectoryHandle, requestPermission ? "readwrite" : "read")
+    : false;
+
+  animationSlotStates = await Promise.all(settings.animationSlots.map(async (slot) => {
+    if (!slot.fileName) {
+      return { available: false };
+    }
+
+    if (!hasDirectory) {
+      return { available: false, needsFolder: true };
+    }
+
+    try {
+      const fileHandle = await animationDirectoryHandle.getFileHandle(slot.fileName);
+      return { available: true, fileHandle };
+    } catch {
+      return { available: false };
+    }
+  }));
+
+  renderAnimationSlots();
+}
+
+async function chooseAnimationFolder() {
+  if (!globalThis.showDirectoryPicker) {
+    setStatus("This browser cannot choose folders from an extension side panel.", true);
+    return;
+  }
+
+  try {
+    const handle = await showDirectoryPicker({ mode: "readwrite" });
+    animationDirectoryHandle = handle;
+    settings.animationFolderName = handle.name;
+    await setStoredHandle(animationFolderHandleKey, handle);
+    await saveSettings();
+    await refreshAnimationSlots({ requestPermission: true });
+    setStatus("Animation folder selected");
+  } catch (error) {
+    if (error?.name !== "AbortError") {
+      setStatus(error.message || "Failed to select animation folder", true);
+    }
+  }
+}
+
+function openAnimationFilePicker(index) {
+  activeAnimationSlotIndex = index;
+  animationFileInput.value = "";
+  animationFileInput.click();
+}
+
+async function handleAnimationSlotClick(index) {
+  const slot = settings.animationSlots[index];
+
+  if (!slot.fileName || !animationDirectoryHandle) {
+    openAnimationFilePicker(index);
+    return;
+  }
+
+  if (!(await ensureHandlePermission(animationDirectoryHandle, "read"))) {
+    renderAnimationSlots();
+    setStatus(animationFolderMissingText, true);
+    return;
+  }
+
+  try {
+    const fileHandle = await animationDirectoryHandle.getFileHandle(slot.fileName);
+    const file = await fileHandle.getFile();
+    await loadVrma(file, slot.name || file.name);
+    animationSlotStates[index] = { available: true, fileHandle };
+    renderAnimationSlots();
+  } catch {
+    animationSlotStates[index] = { available: false };
+    renderAnimationSlots();
+    openAnimationFilePicker(index);
+  }
+}
+
+async function handleAnimationFileSelected(file) {
+  const index = activeAnimationSlotIndex;
+  activeAnimationSlotIndex = null;
+
+  if (index === null || !file) {
+    return;
+  }
+
+  if (!file.name.toLowerCase().endsWith(".vrma")) {
+    setStatus("Choose a VRMA animation file.", true);
+    return;
+  }
+
+  let savedFile = file;
+
+  if (animationDirectoryHandle) {
+    try {
+      if (await ensureHandlePermission(animationDirectoryHandle, "readwrite")) {
+        const writableHandle = await animationDirectoryHandle.getFileHandle(file.name, { create: true });
+        const writable = await writableHandle.createWritable();
+        await writable.write(file);
+        await writable.close();
+        savedFile = await writableHandle.getFile();
+        animationSlotStates[index] = { available: true, fileHandle: writableHandle };
+      }
+    } catch (error) {
+      setStatus(error.message || "Failed to copy animation into the folder", true);
+    }
+  }
+
+  settings.animationSlots[index].fileName = file.name;
+  settings.animationSlots[index].name ||= file.name.replace(/\.vrma$/i, "");
+  await saveSettings();
+  renderAnimationSlots();
+  await loadVrma(savedFile, settings.animationSlots[index].name || savedFile.name);
 }
 
 function getAnchorPixelPosition() {
@@ -1342,7 +1595,7 @@ async function loadVrm(file) {
   }
 }
 
-async function loadVrma(file) {
+async function loadVrma(file, label = file?.name) {
   if (!file) {
     return;
   }
@@ -1369,7 +1622,7 @@ async function loadVrma(file) {
       throw new Error("VRMA animation was not found in this file.");
     }
 
-    playClip(createVRMAnimationClip(vrmAnimations[0], currentVrm), file.name);
+    playClip(createVRMAnimationClip(vrmAnimations[0], currentVrm), label || file.name);
     setStatus("VRMA playing");
   } catch (error) {
     clearAnimation();
@@ -1409,6 +1662,11 @@ function wireSlider(id, section, property, suffix = "") {
 
 vrmInput.addEventListener("change", () => loadVrm(vrmInput.files[0]));
 vrmaInput.addEventListener("change", () => loadVrma(vrmaInput.files[0]));
+animationFolderButton.addEventListener("click", () => void chooseAnimationFolder());
+animationRefresh.addEventListener("click", () => void refreshAnimationSlots({ requestPermission: true }));
+animationFileInput.addEventListener("change", () => {
+  void handleAnimationFileSelected(animationFileInput.files[0]);
+});
 dropZone.addEventListener("dragover", (event) => {
   event.preventDefault();
   dropZone.classList.add("is-dragging");
@@ -1523,15 +1781,23 @@ function mergeSettings(base, override) {
       delta: THREE.MathUtils.clamp(override?.headAdjust?.delta ?? base.headAdjust.delta, 1, 120),
     },
     expressionBlink: { ...base.expressionBlink, ...override?.expressionBlink },
+    animationFolderName: String(override?.animationFolderName ?? base.animationFolderName),
+    animationSlots: normalizeAnimationSlots(override?.animationSlots ?? base.animationSlots),
     controlsOpen: override?.controlsOpen ?? base.controlsOpen,
   };
 }
 
 async function init() {
   settings = mergeSettings(defaultSettings, await loadSettings());
+  try {
+    animationDirectoryHandle = await getStoredHandle(animationFolderHandleKey);
+  } catch {
+    animationDirectoryHandle = null;
+  }
   syncControlsFromSettings();
   renderExpressionButtons(false);
   setExpressionButtonsEnabled(false);
+  await refreshAnimationSlots();
   render();
 }
 

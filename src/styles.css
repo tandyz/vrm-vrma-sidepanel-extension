@@ -440,6 +440,75 @@ button:disabled {
   justify-content: start;
 }
 
+.animation-slots {
+  gap: 8px;
+}
+
+.animation-slots-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 86px;
+  gap: 8px;
+  align-items: center;
+}
+
+.animation-slots-header h2 {
+  margin: 0;
+}
+
+.animation-slots-header button,
+.animation-slot-choose {
+  min-height: 30px;
+  border-color: var(--line);
+  background: #f4f8f5;
+  color: var(--accent-strong);
+  padding: 0 8px;
+}
+
+.animation-folder-button {
+  min-height: 34px;
+  justify-content: start;
+  border-color: var(--line);
+  background: #f7faf8;
+  color: var(--ink);
+  overflow: hidden;
+  padding: 0 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.animation-slot-list {
+  display: grid;
+  gap: 6px;
+}
+
+.animation-slot-row {
+  display: grid;
+  grid-template-columns: minmax(82px, 0.8fr) minmax(0, 1.4fr) 34px;
+  gap: 6px;
+}
+
+.animation-slot-name,
+.animation-slot-file {
+  min-width: 0;
+  min-height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--ink);
+  padding: 0 8px;
+}
+
+.animation-slot-name {
+  font-weight: 700;
+}
+
+.animation-slot-file {
+  justify-content: start;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .step-control {
   display: grid;
   grid-template-columns: 48px 34px minmax(0, 1fr) 34px;
