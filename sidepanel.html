@@ -63,7 +63,7 @@
           <span>Load a VRM first, then a VRMA animation.</span>
           <div class="file-row">
             <label class="file-button">
-              <input id="vrmInput" type="file" accept=".vrm,model/gltf-binary" />
+              <input id="vrmInput" type="file" accept=".vrm,.meta,application/json,model/gltf-binary" multiple />
               VRM
             </label>
             <label class="file-button">
@@ -71,6 +71,9 @@
               VRMA
             </label>
           </div>
+          <button class="model-folder-button" id="modelFolderButton" type="button">
+            Select model folder
+          </button>
         </section>
 
         <section class="settings-file-row" aria-label="Settings file">

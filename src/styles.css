@@ -587,7 +587,8 @@ button:disabled {
   padding: 0 8px;
 }
 
-.animation-folder-button {
+.animation-folder-button,
+.model-folder-button {
   min-height: 34px;
   justify-content: start;
   border-color: var(--line);

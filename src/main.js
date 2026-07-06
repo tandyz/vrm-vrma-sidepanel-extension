@@ -28,6 +28,7 @@ const controlPanel = document.querySelector("#controlPanel");
 const dropZone = document.querySelector("#dropZone");
 const vrmInput = document.querySelector("#vrmInput");
 const vrmaInput = document.querySelector("#vrmaInput");
+const modelFolderButton = document.querySelector("#modelFolderButton");
 const saveSettingsFile = document.querySelector("#saveSettingsFile");
 const loadSettingsFile = document.querySelector("#loadSettingsFile");
 const settingsFileInput = document.querySelector("#settingsFileInput");
@@ -61,6 +62,7 @@ const maxClickHeadYaw = THREE.MathUtils.degToRad(30);
 const maxClickHeadPitch = THREE.MathUtils.degToRad(20);
 const animationSlotCount = 8;
 const animationFolderHandleKey = "animationFolderHandle";
+const modelFolderHandleKey = "modelFolderHandle";
 const animationDbName = "vrm-vrma-sidepanel-files";
 const animationDbStore = "handles";
 const animationFolderMissingText = "애니 폴더를 지정하세요";
@@ -84,6 +86,7 @@ const defaultSettings = {
   gazeRange: { left: -5, right: 5, up: 3, down: -3 },
   headAdjust: { radiusX: 0.36, radiusY: 0.38, delta: 18 },
   expressionBlink: {},
+  modelFolderName: "",
   animationFolderName: "",
   animationSlots: Array.from({ length: animationSlotCount }, (_, index) => createAnimationSlot(
     index === 0 ? "idle" : "action",
@@ -114,18 +117,22 @@ const expressionAliases = {
 let settings = structuredClone(defaultSettings);
 let currentVrm = null;
 let currentVrmRoot = null;
+let currentVrmMeta = null;
 let mixer = null;
 let action = null;
 let isPlaying = false;
 let animationHasEyeKeyframes = false;
+let animationHasHeadKeyframes = false;
 let pendingIdleTimeout = null;
 let activeFinishedHandler = null;
 let currentPlaybackSlotIndex = null;
+let activeAnimationFileName = "";
 let activeExpression = "neutral";
 let expressionNames = ["neutral"];
 let expressionTransition = null;
 let lastVrmUrl = null;
 let lastVrmaUrl = null;
+let modelDirectoryHandle = null;
 let animationDirectoryHandle = null;
 let activeAnimationSlotIndex = null;
 let animationSlotStates = [];
@@ -138,6 +145,9 @@ let gazeAnchorWorld = new THREE.Vector3(0, 1.35, 0);
 let gazeTargetWorld = new THREE.Vector3(0, 1.35, 2);
 let gazeCurrentWorld = gazeTargetWorld.clone();
 let gazeTargetScreen = new THREE.Vector2(0, 0);
+let gazeTransitionFromWorld = gazeTargetWorld.clone();
+let gazeTransitionElapsed = 0;
+let gazeTransitionDuration = 0.05;
 let gazeRandomElapsed = 0;
 let gazeRandomInterval = getNextGazeInterval();
 let gazeClickHold = 0;
@@ -152,10 +162,12 @@ let headTurnTransitionFrom = new THREE.Vector2(0, 0);
 let headTurnTransitionTo = new THREE.Vector2(0, 0);
 let headTurnTransitionElapsed = 0;
 let headTurnTransitionDuration = 0.3;
+let headTurnTransitionEasing = easeInOut;
 let appliedHeadOffset = new THREE.Quaternion();
 let appliedNeckOffset = new THREE.Quaternion();
 let hasAppliedHeadOffset = false;
 const restPose = new Map();
+const appliedMotionCorrections = new Map();
 const clock = new THREE.Clock();
 const gazeCameraDirection = new THREE.Vector3();
 const gazeCameraRight = new THREE.Vector3();
@@ -163,6 +175,8 @@ const gazeCameraUp = new THREE.Vector3();
 const gazeAnchorScreen = new THREE.Vector3();
 const leftEyeScreen = new THREE.Vector3();
 const rightEyeScreen = new THREE.Vector3();
+const correctionEuler = new THREE.Euler();
+const correctionQuaternion = new THREE.Quaternion();
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x11181d);
@@ -178,6 +192,7 @@ const keyLight = new THREE.DirectionalLight(0xffffff, settings.light.intensity);
 scene.add(hemiLight, keyLight);
 
 const floorGrid = new THREE.GridHelper(4, 20, 0x556873, 0x26323a);
+floorGrid.visible = false;
 scene.add(floorGrid);
 
 const vrmLoader = new GLTFLoader();
@@ -232,6 +247,7 @@ function getPortableSettings() {
     gazeRange: settings.gazeRange,
     headAdjust: settings.headAdjust,
     expressionBlink: settings.expressionBlink,
+    modelFolderName: settings.modelFolderName,
     animationFolderName: settings.animationFolderName,
     animationSlots: settings.animationSlots,
     controlsOpen: settings.controlsOpen,
@@ -323,7 +339,7 @@ async function setStoredHandle(key, handle) {
   });
 }
 
-async function ensureHandlePermission(handle, mode = "read") {
+async function ensureHandlePermission(handle, mode = "read", requestPermission = false) {
   if (!handle?.queryPermission || !handle?.requestPermission) {
     return false;
   }
@@ -332,6 +348,10 @@ async function ensureHandlePermission(handle, mode = "read") {
 
   if ((await handle.queryPermission(options)) === "granted") {
     return true;
+  }
+
+  if (!requestPermission) {
+    return false;
   }
 
   return (await handle.requestPermission(options)) === "granted";
@@ -357,9 +377,14 @@ function syncControlsFromSettings() {
   setSliderValue(sliders.cameraPitch, settings.camera.pitch, "deg");
   updateGazeRangeOutputs();
   updateHeadDeltaOutput();
+  updateModelFolderButton();
   applyControlPanelState();
   applyLightSettings();
   applyCameraSettings();
+}
+
+function updateModelFolderButton() {
+  modelFolderButton.textContent = settings.modelFolderName || "Select model folder";
 }
 
 function updateGazeRangeOutputs() {
@@ -619,7 +644,7 @@ function getAnimationSlotFileText(slot, state) {
 
 async function refreshAnimationSlots({ requestPermission = false } = {}) {
   const hasDirectory = animationDirectoryHandle
-    ? await ensureHandlePermission(animationDirectoryHandle, requestPermission ? "readwrite" : "read")
+    ? await ensureHandlePermission(animationDirectoryHandle, requestPermission ? "readwrite" : "read", requestPermission)
     : false;
 
   animationSlotStates = await Promise.all(settings.animationSlots.map(async (slot) => {
@@ -688,13 +713,34 @@ async function chooseAnimationFolder() {
   }
 }
 
+async function chooseModelFolder() {
+  if (!globalThis.showDirectoryPicker) {
+    setStatus("This browser cannot choose folders from an extension side panel.", true);
+    return;
+  }
+
+  try {
+    const handle = await showDirectoryPicker({ mode: "read" });
+    modelDirectoryHandle = handle;
+    settings.modelFolderName = handle.name;
+    await setStoredHandle(modelFolderHandleKey, handle);
+    await saveSettings();
+    updateModelFolderButton();
+    setStatus("Model folder selected");
+  } catch (error) {
+    if (error?.name !== "AbortError") {
+      setStatus(error.message || "Failed to select model folder", true);
+    }
+  }
+}
+
 function openAnimationFilePicker(index) {
   activeAnimationSlotIndex = index;
   animationFileInput.value = "";
   animationFileInput.click();
 }
 
-async function handleAnimationSlotClick(index) {
+async function handleAnimationSlotClick(index, playbackOverrides = {}) {
   const slot = settings.animationSlots[index];
 
   if (!slot.fileName || !animationDirectoryHandle) {
@@ -702,16 +748,29 @@ async function handleAnimationSlotClick(index) {
     return;
   }
 
-  if (!(await ensureHandlePermission(animationDirectoryHandle, "read"))) {
+  if (!(await ensureHandlePermission(animationDirectoryHandle, "read", true))) {
     renderAnimationSlots();
     setStatus(animationFolderMissingText, true);
     return;
   }
 
+  if (slot.kind === "action" && slot.loop === false) {
+    buttonHoverGazeActive = false;
+    gazeClickHold = 0;
+    headReturnHold = 0;
+    setHeadTurnTarget(new THREE.Vector2(0, 0), 0.1, {
+      easing: easeInOut,
+      forceRestart: true,
+    });
+  }
+
   try {
     const fileHandle = await animationDirectoryHandle.getFileHandle(slot.fileName);
     const file = await fileHandle.getFile();
-    await loadVrma(file, slot.name || file.name, getAnimationSlotPlaybackOptions(slot, index));
+    await loadVrma(file, slot.name || file.name, {
+      ...getAnimationSlotPlaybackOptions(slot, index),
+      ...playbackOverrides,
+    });
     animationSlotStates[index] = { available: true, fileHandle };
     renderAnimationSlots();
   } catch {
@@ -738,7 +797,7 @@ async function handleAnimationFileSelected(file) {
 
   if (animationDirectoryHandle) {
     try {
-      if (await ensureHandlePermission(animationDirectoryHandle, "readwrite")) {
+      if (await ensureHandlePermission(animationDirectoryHandle, "readwrite", true)) {
         const writableHandle = await animationDirectoryHandle.getFileHandle(file.name, { create: true });
         const writable = await writableHandle.createWritable();
         await writable.write(file);
@@ -768,6 +827,7 @@ function getAnimationSlotPlaybackOptions(slot, index) {
     expression: slot.expression || "neutral",
     returnToIdle: slot.loop === false,
     slotIndex: index,
+    fileName: slot.fileName || "",
   };
 }
 
@@ -894,6 +954,140 @@ function getVrmRawBoneNode(boneName) {
   );
 }
 
+function getVrmMetaFileName(vrmFileName) {
+  return `${vrmFileName}.meta`;
+}
+
+function findVrmMetaFile(vrmFile, files = []) {
+  if (!vrmFile) {
+    return null;
+  }
+
+  const metaName = getVrmMetaFileName(vrmFile.name).toLowerCase();
+
+  return [...files].find((file) => file.name.toLowerCase() === metaName) ?? null;
+}
+
+async function getVrmMetaFileFromModelFolder(vrmFile, { requestPermission = false } = {}) {
+  if (!vrmFile || !modelDirectoryHandle) {
+    return null;
+  }
+
+  if (!(await ensureHandlePermission(modelDirectoryHandle, "read", requestPermission))) {
+    return null;
+  }
+
+  try {
+    const metaHandle = await modelDirectoryHandle.getFileHandle(getVrmMetaFileName(vrmFile.name));
+
+    return await metaHandle.getFile();
+  } catch {
+    return null;
+  }
+}
+
+async function loadVrmMeta(metaFile) {
+  currentVrmMeta = null;
+
+  if (!metaFile) {
+    return false;
+  }
+
+  const payload = JSON.parse(await metaFile.text());
+
+  if (payload?.type !== "vrm-animation-meta" || !payload.animations || typeof payload.animations !== "object") {
+    throw new Error("VRM meta file has an unsupported format.");
+  }
+
+  currentVrmMeta = payload;
+  return true;
+}
+
+function getCorrectionRotationOrder() {
+  const order = currentVrmMeta?.units?.rotationOrder;
+
+  return ["XYZ", "YZX", "ZXY", "XZY", "YXZ", "ZYX"].includes(order) ? order : "XYZ";
+}
+
+function restoreAppliedMotionCorrections() {
+  appliedMotionCorrections.forEach((transform) => {
+    transform.object.position.copy(transform.position);
+    transform.object.quaternion.copy(transform.quaternion);
+    transform.object.scale.copy(transform.scale);
+  });
+  appliedMotionCorrections.clear();
+}
+
+function getActiveAnimationFileName() {
+  if (activeAnimationFileName) {
+    return activeAnimationFileName;
+  }
+
+  if (Number.isInteger(currentPlaybackSlotIndex)) {
+    return settings.animationSlots[currentPlaybackSlotIndex]?.fileName ?? "";
+  }
+
+  return "";
+}
+
+function getActiveMotionCorrections() {
+  const fileName = getActiveAnimationFileName();
+
+  if (!fileName) {
+    return null;
+  }
+
+  return currentVrmMeta?.animations?.[fileName]?.corrections ?? null;
+}
+
+function applyMotionCorrections() {
+  const corrections = getActiveMotionCorrections();
+
+  if (!currentVrm || !corrections) {
+    return;
+  }
+
+  const rotationOrder = getCorrectionRotationOrder();
+
+  Object.entries(corrections).forEach(([boneName, value]) => {
+    const bone = getVrmRawBoneNode(boneName);
+
+    if (!bone || !value) {
+      return;
+    }
+
+    appliedMotionCorrections.set(bone.uuid, {
+      object: bone,
+      position: bone.position.clone(),
+      quaternion: bone.quaternion.clone(),
+      scale: bone.scale.clone(),
+    });
+
+    const positionOffset = value.positionOffset ?? [0, 0, 0];
+    const rotationOffset = value.rotationOffset ?? [0, 0, 0];
+    const scaleMultiplier = value.scaleMultiplier ?? [1, 1, 1];
+
+    bone.position.x += Number(positionOffset[0] ?? 0);
+    bone.position.y += Number(positionOffset[1] ?? 0);
+    bone.position.z += Number(positionOffset[2] ?? 0);
+
+    correctionEuler.set(
+      THREE.MathUtils.degToRad(Number(rotationOffset[0] ?? 0)),
+      THREE.MathUtils.degToRad(Number(rotationOffset[1] ?? 0)),
+      THREE.MathUtils.degToRad(Number(rotationOffset[2] ?? 0)),
+      rotationOrder,
+    );
+    correctionQuaternion.setFromEuler(correctionEuler);
+    bone.quaternion.multiply(correctionQuaternion);
+
+    bone.scale.x *= Number(scaleMultiplier[0] ?? 1);
+    bone.scale.y *= Number(scaleMultiplier[1] ?? 1);
+    bone.scale.z *= Number(scaleMultiplier[2] ?? 1);
+  });
+
+  currentVrm.scene.updateMatrixWorld(true);
+}
+
 function getObjectWorldY(object) {
   return object.getWorldPosition(new THREE.Vector3()).y;
 }
@@ -927,8 +1121,19 @@ function getEyeNodesForAnimationPriority() {
   return [
     getVrmBoneNode("leftEye"),
     getVrmBoneNode("rightEye"),
+    getVrmRawBoneNode("leftEye"),
+    getVrmRawBoneNode("rightEye"),
     findVrmObjectByName(["J_Adj_L_FaceEye"]),
     findVrmObjectByName(["J_Adj_R_FaceEye"]),
+  ].filter(Boolean);
+}
+
+function getHeadNodesForAnimationPriority() {
+  return [
+    getVrmBoneNode("head"),
+    getVrmBoneNode("neck"),
+    getVrmRawBoneNode("head"),
+    getVrmRawBoneNode("neck"),
   ].filter(Boolean);
 }
 
@@ -939,32 +1144,49 @@ function resetHeadTurnTransition() {
   headTurnTransitionTo.set(0, 0);
   headTurnTransitionElapsed = 0;
   headTurnTransitionDuration = 0.3;
+  headTurnTransitionEasing = easeInOut;
 }
 
-function clipHasEyeBoneKeyframes(clip) {
-  const eyeNodes = getEyeNodesForAnimationPriority();
-
-  if (!clip || !eyeNodes.length) {
+function clipHasBoneKeyframes(clip, nodes, boneNames) {
+  if (!clip || !nodes.length) {
     return false;
   }
 
-  const eyeIds = new Set(["leftEye", "rightEye", "J_Adj_L_FaceEye", "J_Adj_R_FaceEye"]);
+  const ids = new Set(boneNames);
 
-  eyeNodes.forEach((node) => {
-    eyeIds.add(node.uuid);
-    eyeIds.add(node.name);
+  nodes.forEach((node) => {
+    ids.add(node.uuid);
+    ids.add(node.name);
   });
 
   return clip.tracks.some((track) => {
     const trackName = track.name;
-    const animatesRotation =
+    const animatesTransform =
       trackName.endsWith(".quaternion") ||
       trackName.endsWith(".rotation") ||
+      trackName.endsWith(".position") ||
       trackName.includes(".quaternion[") ||
-      trackName.includes(".rotation[");
+      trackName.includes(".rotation[") ||
+      trackName.includes(".position[");
 
-    return animatesRotation && [...eyeIds].some((id) => id && trackName.includes(id));
+    return animatesTransform && [...ids].some((id) => id && trackName.includes(id));
   });
+}
+
+function clipHasEyeBoneKeyframes(clip) {
+  return clipHasBoneKeyframes(
+    clip,
+    getEyeNodesForAnimationPriority(),
+    ["leftEye", "rightEye", "J_Adj_L_FaceEye", "J_Adj_R_FaceEye"],
+  );
+}
+
+function clipHasHeadBoneKeyframes(clip) {
+  return clipHasBoneKeyframes(
+    clip,
+    getHeadNodesForAnimationPriority(),
+    ["head", "neck"],
+  );
 }
 
 function updateGazeAnchorFromVrm() {
@@ -1012,6 +1234,7 @@ function captureRestPose() {
 }
 
 function resetVrmToRestPose() {
+  restoreAppliedMotionCorrections();
   currentVrm?.humanoid?.resetNormalizedPose?.();
 
   restPose.forEach((transform, uuid) => {
@@ -1029,6 +1252,7 @@ function resetVrmToRestPose() {
 
 function clearAnimation() {
   clearPendingIdleReturn();
+  restoreAppliedMotionCorrections();
   if (mixer && activeFinishedHandler) {
     mixer.removeEventListener("finished", activeFinishedHandler);
   }
@@ -1040,7 +1264,9 @@ function clearAnimation() {
   action = null;
   isPlaying = false;
   animationHasEyeKeyframes = false;
+  animationHasHeadKeyframes = false;
   currentPlaybackSlotIndex = null;
+  activeAnimationFileName = "";
   playPause.textContent = "Play";
   playPause.disabled = true;
 }
@@ -1055,6 +1281,7 @@ function clearPendingIdleReturn() {
 function clearVrm() {
   clearAnimation();
   removeAppliedHeadOffset();
+  restoreAppliedMotionCorrections();
 
   if (currentVrm) {
     scene.remove(currentVrmRoot ?? currentVrm.scene);
@@ -1063,6 +1290,7 @@ function clearVrm() {
 
   currentVrm = null;
   currentVrmRoot = null;
+  currentVrmMeta = null;
   expressionNames = ["neutral"];
   expressionTransition = null;
   blinkExpressionNames = [];
@@ -1097,13 +1325,15 @@ function setPlayback(nextPlaying) {
 
 function playClip(clip, label, options = {}) {
   clearPendingIdleReturn();
+  restoreAppliedMotionCorrections();
   if (mixer && activeFinishedHandler) {
     mixer.removeEventListener("finished", activeFinishedHandler);
     activeFinishedHandler = null;
   }
 
   animationHasEyeKeyframes = clipHasEyeBoneKeyframes(clip);
-  if (animationHasEyeKeyframes) {
+  animationHasHeadKeyframes = clipHasHeadBoneKeyframes(clip);
+  if (animationHasEyeKeyframes || animationHasHeadKeyframes) {
     removeAppliedHeadOffset();
     resetHeadTurnTransition();
   }
@@ -1111,6 +1341,7 @@ function playClip(clip, label, options = {}) {
   const previousAction = action;
   const shouldLoop = options.loop ?? loop.checked;
   currentPlaybackSlotIndex = Number.isInteger(options.slotIndex) ? options.slotIndex : null;
+  activeAnimationFileName = options.fileName || settings.animationSlots[currentPlaybackSlotIndex]?.fileName || "";
 
   mixer ??= new THREE.AnimationMixer(currentVrm.scene);
   action = mixer.clipAction(clip);
@@ -1133,9 +1364,11 @@ function playClip(clip, label, options = {}) {
   playPause.textContent = "Pause";
 
   if (previousAction && previousAction !== action) {
-    previousAction.fadeOut(animationFadeSeconds);
-    action.fadeIn(animationFadeSeconds);
-    setTimeout(() => previousAction.stop(), animationFadeSeconds * 1000 + 80);
+    const fadeSeconds = options.fadeSeconds ?? animationFadeSeconds;
+
+    previousAction.fadeOut(fadeSeconds);
+    action.fadeIn(fadeSeconds);
+    setTimeout(() => previousAction.stop(), fadeSeconds * 1000 + 80);
   }
 
   action.play();
@@ -1150,13 +1383,13 @@ function playClip(clip, label, options = {}) {
 
       mixer.removeEventListener("finished", activeFinishedHandler);
       activeFinishedHandler = null;
-      void playIdleAnimation(options.slotIndex);
+      void playIdleAnimation(options.slotIndex, { fadeSeconds: 0.4 });
     };
     mixer.addEventListener("finished", activeFinishedHandler);
   }
 }
 
-async function playIdleAnimation(currentSlotIndex = null) {
+async function playIdleAnimation(currentSlotIndex = null, playbackOverrides = {}) {
   if (animationDirectoryHandle && !animationSlotStates.some((state) => state.available)) {
     await refreshAnimationSlots();
   }
@@ -1164,7 +1397,7 @@ async function playIdleAnimation(currentSlotIndex = null) {
   const idleIndex = findIdleAnimationSlotIndex(currentSlotIndex);
 
   if (idleIndex >= 0) {
-    await handleAnimationSlotClick(idleIndex);
+    await handleAnimationSlotClick(idleIndex, playbackOverrides);
   }
 }
 
@@ -1192,8 +1425,16 @@ function isIdleAnimationSlotIndex(index) {
   return slot.kind === "idle";
 }
 
+function isCurrentPlaybackLooping() {
+  if (Number.isInteger(currentPlaybackSlotIndex)) {
+    return settings.animationSlots[currentPlaybackSlotIndex]?.loop !== false;
+  }
+
+  return action ? loop.checked : true;
+}
+
 function canUsePointerGaze() {
-  return !action || isIdleAnimationSlotIndex(currentPlaybackSlotIndex);
+  return !action || isIdleAnimationSlotIndex(currentPlaybackSlotIndex) || isCurrentPlaybackLooping();
 }
 
 function fitCameraToVrm({ persist = true } = {}) {
@@ -1424,6 +1665,40 @@ function getGazeTargetPoint(screenPoint, scale = 1) {
     .addScaledVector(gazeCameraUp, scaledY * verticalHalfSize);
 }
 
+function getCurrentVrmVersionHint() {
+  const metaVersion = String(currentVrmMeta?.vrm?.version ?? "").trim();
+
+  if (metaVersion === "1.0" || metaVersion === "1") {
+    return "1.0";
+  }
+
+  if (metaVersion === "0.0" || metaVersion === "0") {
+    return "0.0";
+  }
+
+  const detectedVersion = String(currentVrm?.meta?.metaVersion ?? "").trim();
+
+  if (detectedVersion === "1") {
+    return "1.0";
+  }
+
+  if (detectedVersion === "0") {
+    return "0.0";
+  }
+
+  return "";
+}
+
+function shouldInvertLookAtY() {
+  return getCurrentVrmVersionHint() === "0.0";
+}
+
+function getLookAtScreenPoint(screenPoint) {
+  return shouldInvertLookAtY()
+    ? new THREE.Vector2(screenPoint.x, -screenPoint.y)
+    : screenPoint;
+}
+
 function getFaceScreenRadius() {
   const leftEye = getLeftEyeNodeForGazeAnchor();
   const rightEye = getRightEyeNodeForGazeAnchor();
@@ -1506,13 +1781,20 @@ function getClickHeadTurn(screenPoint, faceRadius) {
 function setGazeFromScreen(screenPoint, holdSeconds = 0, options = {}) {
   const gazeScale = options.gazeScale ?? 1;
   const headScale = options.headScale ?? 1;
-  const headTurnDuration = options.immediate ? 0 : 0.2;
+  const headTurnDuration = options.immediate ? 0 : options.faceRadius ? 0.5 : 0.2;
+  const lookAtScreenPoint = getLookAtScreenPoint(screenPoint);
   gazeTargetScreen.copy(screenPoint);
-  gazeTargetWorld.copy(getGazeTargetPoint(screenPoint, gazeScale));
+  gazeTransitionFromWorld.copy(gazeCurrentWorld);
+  gazeTransitionElapsed = 0;
+  gazeTransitionDuration = options.immediate ? 0 : options.faceRadius ? 0.5 : 0.05;
+  gazeTargetWorld.copy(getGazeTargetPoint(lookAtScreenPoint, gazeScale));
   gazeClickHold = Math.max(gazeClickHold, holdSeconds);
 
   if (options.faceRadius) {
-    setHeadTurnTarget(getClickHeadTurn(screenPoint, options.faceRadius), headTurnDuration);
+    setHeadTurnTarget(getClickHeadTurn(screenPoint, options.faceRadius), headTurnDuration, {
+      easing: easeOut,
+      forceRestart: options.restartHeadTurn === true,
+    });
     return;
   }
 
@@ -1578,6 +1860,10 @@ function removeAppliedHeadOffset() {
 }
 
 function applyHeadGazeOffset() {
+  if (animationHasHeadKeyframes && !isCurrentPlaybackLooping()) {
+    return;
+  }
+
   const head = getVrmRawBoneNode("head");
   const neck = getVrmRawBoneNode("neck");
 
@@ -1601,7 +1887,11 @@ function easeInOut(t) {
   return t * t * (3 - 2 * t);
 }
 
-function setHeadTurnTarget(nextTarget, duration) {
+function easeOut(t) {
+  return 1 - ((1 - t) ** 3);
+}
+
+function setHeadTurnTarget(nextTarget, duration, options = {}) {
   if (duration <= 0) {
     targetHeadTurn.copy(nextTarget);
     currentHeadTurn.copy(nextTarget);
@@ -1609,10 +1899,11 @@ function setHeadTurnTarget(nextTarget, duration) {
     headTurnTransitionTo.copy(nextTarget);
     headTurnTransitionElapsed = 0;
     headTurnTransitionDuration = 0;
+    headTurnTransitionEasing = options.easing ?? easeInOut;
     return;
   }
 
-  if (targetHeadTurn.distanceToSquared(nextTarget) < 0.000001) {
+  if (!options.forceRestart && targetHeadTurn.distanceToSquared(nextTarget) < 0.000001) {
     return;
   }
 
@@ -1621,10 +1912,11 @@ function setHeadTurnTarget(nextTarget, duration) {
   headTurnTransitionTo.copy(nextTarget);
   headTurnTransitionElapsed = 0;
   headTurnTransitionDuration = Math.max(0.01, duration);
+  headTurnTransitionEasing = options.easing ?? easeInOut;
 }
 
 function returnHeadToCenter() {
-  setHeadTurnTarget(new THREE.Vector2(0, 0), 0.5);
+  setHeadTurnTarget(new THREE.Vector2(0, 0), 0.5, { easing: easeInOut });
 }
 
 function updateHeadTurn(delta) {
@@ -1637,7 +1929,7 @@ function updateHeadTurn(delta) {
   currentHeadTurn.lerpVectors(
     headTurnTransitionFrom,
     headTurnTransitionTo,
-    easeInOut(headTurnTransitionElapsed / headTurnTransitionDuration),
+    headTurnTransitionEasing(headTurnTransitionElapsed / headTurnTransitionDuration),
   );
 }
 
@@ -1680,7 +1972,16 @@ function updateGaze(delta) {
     }
   }
 
-  gazeCurrentWorld.lerp(gazeTargetWorld, 1 - Math.exp(-delta * 60));
+  if (gazeTransitionDuration <= 0) {
+    gazeCurrentWorld.copy(gazeTargetWorld);
+  } else {
+    gazeTransitionElapsed = Math.min(gazeTransitionElapsed + delta, gazeTransitionDuration);
+    gazeCurrentWorld.lerpVectors(
+      gazeTransitionFromWorld,
+      gazeTargetWorld,
+      easeOut(gazeTransitionElapsed / gazeTransitionDuration),
+    );
+  }
   updateHeadTurn(delta);
 
   if (currentVrm.lookAt) {
@@ -1697,7 +1998,10 @@ function handleViewerGazeInput(event, options = {}) {
     return;
   }
 
-  setGazeFromClientPoint(event.clientX, event.clientY, 2, options);
+  setGazeFromClientPoint(event.clientX, event.clientY, 2, {
+    restartHeadTurn: !options.immediate,
+    ...options,
+  });
   triggerInteractionBlink();
   headReturnHold = 2;
 }
@@ -1710,7 +2014,8 @@ function handleViewerButtonPointerOver(event) {
     !viewer.contains(button) ||
     button.disabled ||
     isViewerHoverGazeExcludedButton(button) ||
-    !currentVrm
+    !currentVrm ||
+    !canUsePointerGaze()
   ) {
     return;
   }
@@ -1813,6 +2118,9 @@ function resetGaze() {
   gazeTargetScreen.set(0, 0);
   gazeTargetWorld.copy(getGazeTargetPoint(gazeTargetScreen));
   gazeCurrentWorld.copy(gazeTargetWorld);
+  gazeTransitionFromWorld.copy(gazeTargetWorld);
+  gazeTransitionElapsed = 0;
+  gazeTransitionDuration = 0.05;
   gazeRandomElapsed = 0;
   gazeRandomInterval = getNextGazeInterval();
   gazeClickHold = 0;
@@ -1895,13 +2203,16 @@ function optimizeVrmScene(root) {
   }
 }
 
-async function loadVrm(file) {
+async function loadVrm(file, metaFile = null, { requestModelFolderPermission = false } = {}) {
   if (!file) {
     return;
   }
 
   clearVrm();
   setStatus("Loading VRM...");
+  const resolvedMetaFile = metaFile ?? await getVrmMetaFileFromModelFolder(file, {
+    requestPermission: requestModelFolderPermission,
+  });
 
   if (lastVrmUrl) {
     URL.revokeObjectURL(lastVrmUrl);
@@ -1934,6 +2245,16 @@ async function loadVrm(file) {
     renderExpressionButtons(true);
     renderAnimationSlots();
     applyExpression("neutral");
+    let hasVrmMeta = false;
+    let vrmMetaError = "";
+
+    try {
+      hasVrmMeta = await loadVrmMeta(resolvedMetaFile);
+    } catch (metaError) {
+      console.warn("VRM meta load failed.", metaError);
+      vrmMetaError = metaError.message || "Failed to load VRM meta";
+    }
+
     modelName.textContent = file.name;
     viewportHint.classList.add("is-hidden");
     fitCamera.disabled = false;
@@ -1941,7 +2262,10 @@ async function loadVrm(file) {
     applyCameraSettings();
     updateGazeAnchorFromVrm();
     resetGaze();
-    setStatus("VRM loaded with MToon");
+    setStatus(
+      vrmMetaError || (hasVrmMeta ? "VRM loaded with motion corrections" : "VRM loaded with MToon"),
+      Boolean(vrmMetaError),
+    );
     await playIdleAnimation();
   } catch (error) {
     clearVrm();
@@ -1975,23 +2299,28 @@ async function loadVrma(file, label = file?.name, playbackOptions = {}) {
       throw new Error("VRMA animation was not found in this file.");
     }
 
-    playClip(createVRMAnimationClip(vrmAnimations[0], currentVrm), label || file.name, playbackOptions);
+    playClip(createVRMAnimationClip(vrmAnimations[0], currentVrm), label || file.name, {
+      ...playbackOptions,
+      fileName: playbackOptions.fileName || file.name,
+    });
     setStatus("VRMA playing");
   } catch (error) {
     setStatus(error.message || "Failed to load VRMA", true);
   }
 }
 
-function handleFiles(files) {
-  [...files].forEach((file) => {
+async function handleFiles(files) {
+  const fileList = [...files];
+
+  for (const file of fileList) {
     const name = file.name.toLowerCase();
 
     if (name.endsWith(".vrm")) {
-      void loadVrm(file);
+      await loadVrm(file, findVrmMetaFile(file, fileList), { requestModelFolderPermission: true });
     } else if (name.endsWith(".vrma")) {
-      void loadVrma(file);
+      await loadVrma(file);
     }
-  });
+  }
 }
 
 function wireSlider(id, section, property, suffix = "") {
@@ -2011,8 +2340,14 @@ function wireSlider(id, section, property, suffix = "") {
   slider.input.addEventListener("change", () => void saveSettings());
 }
 
-vrmInput.addEventListener("change", () => loadVrm(vrmInput.files[0]));
+vrmInput.addEventListener("change", () => {
+  const files = [...vrmInput.files];
+  const vrmFile = files.find((file) => file.name.toLowerCase().endsWith(".vrm"));
+
+  void loadVrm(vrmFile, findVrmMetaFile(vrmFile, files), { requestModelFolderPermission: true });
+});
 vrmaInput.addEventListener("change", () => loadVrma(vrmaInput.files[0]));
+modelFolderButton.addEventListener("click", () => void chooseModelFolder());
 saveSettingsFile.addEventListener("click", downloadSettingsFile);
 loadSettingsFile.addEventListener("click", openSettingsFilePicker);
 settingsFileInput.addEventListener("change", () => {
@@ -2031,12 +2366,12 @@ dropZone.addEventListener("dragleave", () => dropZone.classList.remove("is-dragg
 dropZone.addEventListener("drop", (event) => {
   event.preventDefault();
   dropZone.classList.remove("is-dragging");
-  handleFiles(event.dataTransfer.files);
+  void handleFiles(event.dataTransfer.files);
 });
 window.addEventListener("dragover", (event) => event.preventDefault());
 window.addEventListener("drop", (event) => {
   event.preventDefault();
-  handleFiles(event.dataTransfer.files);
+  void handleFiles(event.dataTransfer.files);
 });
 
 playPause.addEventListener("click", () => setPlayback(!isPlaying));
@@ -2102,9 +2437,12 @@ function render() {
   resizeRenderer();
   applyCameraSettings();
   removeAppliedHeadOffset();
+  restoreAppliedMotionCorrections();
 
-  if (mixer && isPlaying) {
-    mixer.update(delta);
+  if (mixer) {
+    if (isPlaying) {
+      mixer.update(delta);
+    }
   }
 
   updateExpressionTransition(delta);
@@ -2112,6 +2450,7 @@ function render() {
   updateGaze(delta);
   currentVrm?.update(delta);
 
+  applyMotionCorrections();
   applyHeadGazeOffset();
   updateHeadAdjustUi();
 
@@ -2138,6 +2477,7 @@ function mergeSettings(base, override) {
       delta: THREE.MathUtils.clamp(override?.headAdjust?.delta ?? base.headAdjust.delta, 1, 120),
     },
     expressionBlink: { ...base.expressionBlink, ...override?.expressionBlink },
+    modelFolderName: String(override?.modelFolderName ?? base.modelFolderName),
     animationFolderName: String(override?.animationFolderName ?? base.animationFolderName),
     animationSlots: normalizeAnimationSlots(override?.animationSlots ?? base.animationSlots),
     controlsOpen: override?.controlsOpen ?? base.controlsOpen,
@@ -2146,6 +2486,11 @@ function mergeSettings(base, override) {
 
 async function init() {
   settings = mergeSettings(defaultSettings, await loadSettings());
+  try {
+    modelDirectoryHandle = await getStoredHandle(modelFolderHandleKey);
+  } catch {
+    modelDirectoryHandle = null;
+  }
   try {
     animationDirectoryHandle = await getStoredHandle(animationFolderHandleKey);
   } catch {
